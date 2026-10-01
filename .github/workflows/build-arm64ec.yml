@@ -1,4 +1,4 @@
-name: Build Windows ARM64EC
+name: build
 
 on:
   workflow_dispatch:
@@ -33,7 +33,6 @@ jobs:
             @('Build/Build.ps1', '''..\BuildOut\Release64''', '''..\BuildOut\ReleaseARM''', 1),
             @('Build/Build.ps1', '..\BuildOut\Release64\Obj\Common_Test\Common_Test.dll', '..\BuildOut\ReleaseARM\Obj\Common_Test\Common_Test.dll', 1),
             @('Build/Build.ps1', '..\BuildOut\Release64\Rainmeter.dll', '..\BuildOut\ReleaseARM\Rainmeter.dll', 1),
-            @('Build/Build.ps1', 'Rainmeter-$versionFull.exe', 'Rainmeter-$versionFull-ARM64EC.exe', 1),
             @('Build/GenerateLanguages.ps1', 'Release64', 'ReleaseARM', 1),
             @('Build/Installer/Installer.nsi', 'Release64', 'ReleaseARM', 2),
             @('Build/Installer/Installer.nsi', '${IfNot} ${RunningX64}', '${IfNot} ${IsNativeARM64}', 1),
@@ -54,11 +53,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          trap {
-            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Host "::error::$message"
-            exit 1
-          }
           . .\Build\VisualStudioBuildTools.ps1
           Add-VisualStudioBuildToolsToPath
           $source = Join-Path $env:VCINSTALLDIR 'Auxiliary\VS\UnitTest\include'
@@ -121,7 +115,6 @@ jobs:
           }
           $after = $before + "`n      " + '<AdditionalIncludeDirectories Condition="''$(Platform)''==''ARM64EC''">$(SolutionDir)Build\Arm64EcTestFramework;$(VCInstallDir)UnitTest\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>'
           [IO.File]::WriteAllText($props, $content.Replace($before, $after), [Text.UTF8Encoding]::new($false))
-          Write-Host "Adapted $count C++ unit test metadata declarations for ARM64EC."
 
       - name: Install NSIS
         id: install-nsis
@@ -171,8 +164,6 @@ jobs:
 
       - name: Test Rainmeter
         id: test
-        env:
-          VSTEST_DIAG: ${{ runner.temp }}/rainmeter-vstest.log
         run: .\Build\Build.ps1 test
         shell: pwsh
         background: true
@@ -219,10 +210,3 @@ jobs:
         background: true
 
       - wait: [test, upload-build, upload-debug-symbols, upload-installer, save-build-cache]
-
-      - name: Upload test diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: TestDiagnostics-ARM64EC
-          path: ${{ runner.temp }}/rainmeter-vstest*
