@@ -54,12 +54,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap {
+            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error::$message"
+            exit 1
+          }
           . .\Build\VisualStudioBuildTools.ps1
           Add-VisualStudioBuildToolsToPath
-          $source = Join-Path $env:VCINSTALLDIR 'UnitTest\include'
+          $source = Join-Path $env:VCINSTALLDIR 'Auxiliary\VS\UnitTest\include'
           $destination = Join-Path $PWD 'Build\Arm64EcTestFramework'
           if (-not (Test-Path -LiteralPath (Join-Path $source 'CppUnitTest.h'))) {
-            throw 'Visual Studio C++ unit test headers were not found.'
+            throw "Visual Studio C++ unit test headers were not found: $source"
           }
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
           Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
