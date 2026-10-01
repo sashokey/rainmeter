@@ -98,6 +98,8 @@ jobs:
 
       - name: Test Rainmeter
         id: test
+        env:
+          VSTEST_DIAG: ${{ runner.temp }}/rainmeter-vstest.log
         run: .\Build\Build.ps1 test
         shell: pwsh
         background: true
@@ -144,3 +146,10 @@ jobs:
         background: true
 
       - wait: [test, upload-build, upload-debug-symbols, upload-installer, save-build-cache]
+
+      - name: Upload test diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: TestDiagnostics-ARM64EC
+          path: ${{ runner.temp }}/rainmeter-vstest*
