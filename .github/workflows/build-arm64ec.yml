@@ -1,0 +1,146 @@
+name: Build Windows ARM64EC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - 'RainLexer/**'
+      - '.github/workflows/*rainlexer*'
+
+jobs:
+  rainmeter:
+    if: "!contains(github.event.head_commit.message, 'skipci') && !contains(github.event.head_commit.message, 'ciskip')"
+    runs-on: windows-11-vs2026-arm
+    steps:
+      - name: Clone repo
+        id: source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: rainmeter/rainmeter
+          ref: master
+          persist-credentials: false
+
+      - name: Select ARM64EC configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $changes = @(
+            @('SkinInstaller/SkinInstallerLauncher.vcxproj', '<EntryPointSymbol>Main</EntryPointSymbol>', '<EntryPointSymbol Condition="''$(Platform)''!=''ARM64EC''">Main</EntryPointSymbol>', 1),
+            @('SkinInstaller/SkinInstallerLauncher.vcxproj', '<IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>', '<IgnoreAllDefaultLibraries Condition="''$(Platform)''!=''ARM64EC''">true</IgnoreAllDefaultLibraries>', 1),
+            @('Build/Build.ps1', '"/t:$msBuildTarget", ''/p:Platform=x64''', '"/t:$msBuildTarget", ''/p:Platform=ARM64EC''', 1),
+            @('Build/Build.ps1', '''..\BuildOut\Release64''', '''..\BuildOut\ReleaseARM''', 1),
+            @('Build/Build.ps1', '..\BuildOut\Release64\Obj\Common_Test\Common_Test.dll', '..\BuildOut\ReleaseARM\Obj\Common_Test\Common_Test.dll', 1),
+            @('Build/Build.ps1', '..\BuildOut\Release64\Rainmeter.dll', '..\BuildOut\ReleaseARM\Rainmeter.dll', 1),
+            @('Build/Build.ps1', 'Rainmeter-$versionFull.exe', 'Rainmeter-$versionFull-ARM64EC.exe', 1),
+            @('Build/GenerateLanguages.ps1', 'Release64', 'ReleaseARM', 1),
+            @('Build/Installer/Installer.nsi', 'Release64', 'ReleaseARM', 2),
+            @('Build/Installer/Installer.nsi', '${IfNot} ${RunningX64}', '${IfNot} ${IsNativeARM64}', 1),
+            @('Build/Installer/Installer.nsi', '${AtLeastBuild} 18362', '${AtLeastBuild} 22000', 1),
+            @('Build/Installer/Installer.nsi', 'MessageBox MB_OK|MB_ICONSTOP "$(UnsupportedWindowsError)" /SD IDOK', 'MessageBox MB_OK|MB_ICONSTOP "This build requires Windows 11 on ARM64." /SD IDOK', 1)
+          )
+          foreach ($change in $changes) {
+            $path, $before, $after, $expectedCount = $change
+            $content = [IO.File]::ReadAllText((Join-Path $PWD $path))
+            $actualCount = [regex]::Matches($content, [regex]::Escape($before)).Count
+            if ($actualCount -ne $expectedCount) {
+              throw "Upstream build script changed: $path; expected $expectedCount matches, found $actualCount."
+            }
+            [IO.File]::WriteAllText((Join-Path $PWD $path), $content.Replace($before, $after), [Text.UTF8Encoding]::new($false))
+          }
+
+      - name: Install NSIS
+        id: install-nsis
+        uses: ./.github/actions/install-nsis
+        background: true
+
+      - name: Validate and generate language files
+        id: generate-languages
+        run: |
+          ./Language/UpdateLanguageFiles.sh
+          if ! git diff --quiet -- Language; then
+            echo "::error::Language files are out of sync. Run Language/UpdateLanguageFiles.sh and commit the result."
+            git diff -- Language
+            exit 1
+          fi
+          pwsh -File ./Build/Build.ps1 languages
+        shell: bash
+        background: true
+
+      - name: Cache build
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: BuildOut/ReleaseARM/Obj
+          key: rainmeter-msbuild-v3-release-arm64ec-${{ steps.source.outputs.commit }}
+          restore-keys: |
+            rainmeter-msbuild-v3-release-arm64ec-
+
+      - name: Prepare build cache
+        run: .\Build\PrepareBuildCache.ps1 "BuildOut\ReleaseARM\Obj"
+        shell: pwsh
+
+      - name: Build Rainmeter
+        env:
+          RAINMETER_SOURCE_SHA: ${{ steps.source.outputs.commit }}
+        run: |
+          $env:GITHUB_SHA = $env:RAINMETER_SOURCE_SHA
+          .\Build\Build.ps1 rainmeter "$(Get-Date -Format 'yyyy.M.d').$env:GITHUB_RUN_NUMBER" -IncludeTests
+        shell: pwsh
+
+      - name: Save build cache
+        id: save-build-cache
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: BuildOut/ReleaseARM/Obj
+          key: rainmeter-msbuild-v3-release-arm64ec-${{ steps.source.outputs.commit }}
+        background: true
+
+      - name: Test Rainmeter
+        id: test
+        run: .\Build\Build.ps1 test
+        shell: pwsh
+        background: true
+
+      - wait: generate-languages
+
+      - name: Upload build
+        id: upload-build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: BuildOut-ReleaseARM
+          path: |
+            BuildOut/ReleaseARM
+            !BuildOut/ReleaseARM/Obj
+          if-no-files-found: error
+        background: true
+
+      - name: Upload debug symbols
+        id: upload-debug-symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: DebugSymbols-ReleaseARM
+          path: BuildOut/**/*.pdb
+          if-no-files-found: error
+        background: true
+
+      - wait: install-nsis
+
+      - name: Build installer
+        run: .\Build\Build.ps1 installer "$(Get-Date -Format 'yyyy.M.d').$env:GITHUB_RUN_NUMBER"
+        shell: pwsh
+        id: build-installer
+        background: true
+
+      - wait: build-installer
+
+      - name: Upload installer
+        id: upload-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          path: Build/Rainmeter-*.exe
+          archive: false
+          if-no-files-found: error
+        background: true
+
+      - wait: [test, upload-build, upload-debug-symbols, upload-installer, save-build-cache]
