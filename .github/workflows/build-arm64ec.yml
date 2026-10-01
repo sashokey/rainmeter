@@ -50,6 +50,74 @@ jobs:
             [IO.File]::WriteAllText((Join-Path $PWD $path), $content.Replace($before, $after), [Text.UTF8Encoding]::new($false))
           }
 
+      - name: Adapt ARM64EC test metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . .\Build\VisualStudioBuildTools.ps1
+          Add-VisualStudioBuildToolsToPath
+          $source = Join-Path $env:VCINSTALLDIR 'UnitTest\include'
+          $destination = Join-Path $PWD 'Build\Arm64EcTestFramework'
+          if (-not (Test-Path -LiteralPath (Join-Path $source 'CppUnitTest.h'))) {
+            throw 'Visual Studio C++ unit test headers were not found.'
+          }
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
+          $helper = @'
+          #pragma once
+          #include <cstddef>
+
+          template <std::size_t Size>
+          struct RainmeterTestExportName
+          {
+              char value[Size]{};
+
+              constexpr RainmeterTestExportName(const char (&name)[Size])
+              {
+                  std::size_t output = 0;
+                  for (std::size_t input = 0; input < Size; ++input)
+                  {
+          #if defined(_M_ARM64EC)
+                      if (input + 2 < Size && name[input] == '$'
+                          && name[input + 1] == '$' && name[input + 2] == 'h')
+                      {
+                          input += 2;
+                          continue;
+                      }
+          #endif
+                      value[output++] = name[input];
+                  }
+              }
+          };
+
+          template <RainmeterTestExportName Name>
+          inline constexpr auto RainmeterTestExportNameValue = Name;
+          '@
+          [IO.File]::WriteAllText((Join-Path $destination 'RainmeterTestExportName.h'), $helper, [Text.UTF8Encoding]::new($false))
+          $before = 'reinterpret_cast<const unsigned char*>(__FUNCDNAME__)'
+          $after = 'reinterpret_cast<const unsigned char*>(::RainmeterTestExportNameValue<__FUNCDNAME__>.value)'
+          $count = 0
+          foreach ($header in Get-ChildItem -LiteralPath $destination -Filter '*.h' -Recurse -File) {
+            $content = [IO.File]::ReadAllText($header.FullName)
+            $matchCount = [regex]::Matches($content, [regex]::Escape($before)).Count
+            if ($matchCount -eq 0) { continue }
+            $content = '#include "RainmeterTestExportName.h"' + "`n" + $content.Replace($before, $after)
+            [IO.File]::WriteAllText($header.FullName, $content, [Text.UTF8Encoding]::new($false))
+            $count += $matchCount
+          }
+          if ($count -lt 2) {
+            throw "C++ unit test metadata layout changed: expected at least 2 helper names, found $count."
+          }
+          $props = Join-Path $PWD 'Build\VS\Rainmeter.Cpp.props'
+          $content = [IO.File]::ReadAllText($props)
+          $before = '<AdditionalIncludeDirectories>$(VCInstallDir)UnitTest\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>'
+          if ([regex]::Matches($content, [regex]::Escape($before)).Count -ne 1) {
+            throw 'Upstream C++ unit test include configuration changed.'
+          }
+          $after = $before + "`n      " + '<AdditionalIncludeDirectories Condition="''$(Platform)''==''ARM64EC''">$(SolutionDir)Build\Arm64EcTestFramework;$(VCInstallDir)UnitTest\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>'
+          [IO.File]::WriteAllText($props, $content.Replace($before, $after), [Text.UTF8Encoding]::new($false))
+          Write-Host "Adapted $count C++ unit test metadata declarations for ARM64EC."
+
       - name: Install NSIS
         id: install-nsis
         uses: ./.github/actions/install-nsis
@@ -72,9 +140,9 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: BuildOut/ReleaseARM/Obj
-          key: rainmeter-msbuild-v3-release-arm64ec-${{ steps.source.outputs.commit }}
+          key: rainmeter-msbuild-v4-release-arm64ec-${{ steps.source.outputs.commit }}
           restore-keys: |
-            rainmeter-msbuild-v3-release-arm64ec-
+            rainmeter-msbuild-v4-release-arm64ec-
 
       - name: Prepare build cache
         run: .\Build\PrepareBuildCache.ps1 "BuildOut\ReleaseARM\Obj"
@@ -93,7 +161,7 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: BuildOut/ReleaseARM/Obj
-          key: rainmeter-msbuild-v3-release-arm64ec-${{ steps.source.outputs.commit }}
+          key: rainmeter-msbuild-v4-release-arm64ec-${{ steps.source.outputs.commit }}
         background: true
 
       - name: Test Rainmeter
